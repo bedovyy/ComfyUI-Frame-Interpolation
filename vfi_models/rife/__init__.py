@@ -22,6 +22,8 @@ CKPT_NAME_VER_DICT = {
     "rife47.pth": "4.7",
     "rife48.pth": "4.7",
     "rife49.pth": "4.7",
+    "rife421.pth": "4.21",
+    "rife422.pth": "4.21",
     "sudo_rife4_269.662_testV1_scale1.pth": "4.0"
     # Arch 4.10 doesn't work due to state dict mismatch
     # "rife410.pth": "4.10",

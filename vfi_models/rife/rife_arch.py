@@ -92,7 +92,7 @@ def conv(
             ),
             nn.PReLU(out_planes),
         )
-    if arch_ver in ["4.2", "4.3", "4.5", "4.6", "4.7", "4.10"]:
+    if arch_ver in ["4.2", "4.3", "4.5", "4.6", "4.7", "4.10", "4.21"]:
         return nn.Sequential(
             nn.Conv2d(
                 in_planes,
@@ -148,7 +148,7 @@ def deconv(in_planes, out_planes, kernel_size=4, stride=2, padding=1, arch_ver="
             ),
             nn.PReLU(out_planes),
         )
-    if arch_ver in ["4.2", "4.3", "4.5", "4.6", "4.7", "4.10"]:
+    if arch_ver in ["4.2", "4.3", "4.5", "4.6", "4.7", "4.10", "4.21"]:
         return nn.Sequential(
             torch.nn.ConvTranspose2d(
                 in_channels=in_planes,
@@ -197,7 +197,7 @@ class IFBlock(nn.Module):
             )
             self.lastconv = nn.ConvTranspose2d(c, 5, 4, 2, 1)
 
-        if arch_ver in ["4.5", "4.6", "4.7", "4.10"]:
+        if arch_ver in ["4.5", "4.6", "4.7", "4.10", "4.21"]:
             self.convblock = nn.Sequential(
                 ResConv(c),
                 ResConv(c),
@@ -216,6 +216,10 @@ class IFBlock(nn.Module):
             self.lastconv = nn.Sequential(
                 nn.ConvTranspose2d(c, 4 * 6, 4, 2, 1), nn.PixelShuffle(2)
             )
+        if arch_ver in ["4.21"]:
+            self.lastconv = nn.Sequential(
+                nn.ConvTranspose2d(c, 4 * 13, 4, 2, 1), nn.PixelShuffle(2)
+            )
 
     def forward(self, x, flow=None, scale=1):
         x = F.interpolate(
@@ -233,7 +237,7 @@ class IFBlock(nn.Module):
         feat = self.conv0(x)
         if self.arch_ver == "4.0":
             feat = self.convblock(feat) + feat
-        if self.arch_ver in ["4.2", "4.3", "4.5", "4.6", "4.7", "4.10"]:
+        if self.arch_ver in ["4.2", "4.3", "4.5", "4.6", "4.7", "4.10", "4.21"]:
             feat = self.convblock(feat)
 
         tmp = self.lastconv(feat)
@@ -242,12 +246,14 @@ class IFBlock(nn.Module):
                 tmp, scale_factor=scale * 2, mode="bilinear", align_corners=False
             )
             flow = tmp[:, :4] * scale * 2
-        if self.arch_ver in ["4.5", "4.6", "4.7", "4.10"]:
+        if self.arch_ver in ["4.5", "4.6", "4.7", "4.10", "4.21"]:
             tmp = F.interpolate(
                 tmp, scale_factor=scale, mode="bilinear", align_corners=False
             )
             flow = tmp[:, :4] * scale
         mask = tmp[:, 4:5]
+        if self.arch_ver in ["4.21"]:
+            return flow, mask, tmp[:, 5:]
         return flow, mask
 
 
@@ -316,9 +322,30 @@ class Unet(nn.Module):
         x = self.conv(x)
         return torch.sigmoid(x)
 
+# 4.21-4.22
+class Head(nn.Module):
+    def __init__(self):
+        super(Head, self).__init__()
+        self.cnn0 = nn.Conv2d(3, 32, 3, 2, 1)
+        self.cnn1 = nn.Conv2d(32, 32, 3, 1, 1)
+        self.cnn2 = nn.Conv2d(32, 32, 3, 1, 1)
+        self.cnn3 = nn.ConvTranspose2d(32, 8, 4, 2, 1)
+        self.relu = nn.LeakyReLU(0.2, True)
+    def forward(self, x, feat=False):
+        x = x.clamp(0.0, 1.0)
+        x0 = self.cnn0(x)
+        x = self.relu(x0)
+        x1 = self.cnn1(x)
+        x = self.relu(x1)
+        x2 = self.cnn2(x)
+        x = self.relu(x2)
+        x3 = self.cnn3(x)
+        if feat:
+            return [x0, x1, x2, x3]
+        return x3
 
 """
-currently supports 4.0-4.12
+currently supports 4.0-4.22
 
 4.0: 4.0, 4.1
 4.2: 4.2
@@ -327,6 +354,7 @@ currently supports 4.0-4.12
 4.6: 4.6
 4.7: 4.7, 4.8, 4.9
 4.10: 4.10 4.11 4.12
+4.21: 4.21 4.22
 """
 
 
@@ -361,6 +389,12 @@ class IFNet(nn.Module):
                 nn.LeakyReLU(0.2, True),
                 nn.ConvTranspose2d(32, 8, 4, 2, 1),
             )
+        if arch_ver in ["4.21"]:
+            self.block0 = IFBlock(7 + 16, c=256, arch_ver=arch_ver)
+            self.block1 = IFBlock(8 + 4 + 16 + 8, c=192, arch_ver=arch_ver)
+            self.block2 = IFBlock(8 + 4 + 16 + 8, c=96, arch_ver=arch_ver)
+            self.block3 = IFBlock(8 + 4 + 16 + 8, c=48, arch_ver=arch_ver)
+            self.encode = Head()
 
         if arch_ver in ["4.0", "4.2", "4.3"]:
             self.contextnet = Contextnet(arch_ver=arch_ver)
@@ -402,7 +436,7 @@ class IFNet(nn.Module):
         merged = []
         mask_list = []
 
-        if self.arch_ver in ["4.7", "4.10"]:
+        if self.arch_ver in ["4.7", "4.10", "4.21"]:
             f0 = self.encode(img0[:, :3])
             f1 = self.encode(img1[:, :3])
 
@@ -449,6 +483,13 @@ class IFNet(nn.Module):
                         flow = (flow + torch.cat((f_[:, 2:4], f_[:, :2]), 1)) / 2
                         mask = (mask + (-m_)) / 2
 
+                # 4.21-4.22
+                if self.arch_ver in ["4.21"]:
+                    flow, mask, feat = block[i](
+                        torch.cat((img0[:, :3], img1[:, :3], f0, f1, timestep), 1),
+                        None,
+                        scale=scale_list[i],
+                    )
             else:
                 # 4.0-4.6
                 if self.arch_ver in ["4.0", "4.2", "4.3", "4.5", "4.6"]:
@@ -509,6 +550,25 @@ class IFNet(nn.Module):
                     )
                     flow = flow + fd
 
+                # 4.21-4.22
+                if self.arch_ver in ["4.21"]:
+                    fd, m0, feat = block[i](
+                        torch.cat(
+                            (
+                                warped_img0[:, :3],
+                                warped_img1[:, :3],
+                                warp(f0, flow[:, :2]),
+                                warp(f1, flow[:, 2:4]),
+                                timestep,
+                                mask,
+                                feat,
+                            ),
+                            1,
+                        ),
+                        flow,
+                        scale=scale_list[i],
+                    )
+                    flow = flow + fd
                 # 4.0-4.6 ensemble
                 if ensemble and self.arch_ver in [
                     "4.0",
@@ -560,7 +620,7 @@ class IFNet(nn.Module):
                     flow = flow + f0
                     mask = mask + m0
 
-                if not ensemble and self.arch_ver in ["4.7", "4.10"]:
+                if not ensemble and self.arch_ver in ["4.7", "4.10", "4.21"]:
                     mask = m0
 
             mask_list.append(mask)
@@ -573,7 +633,7 @@ class IFNet(nn.Module):
             mask_list[3] = torch.sigmoid(mask_list[3])
             merged[3] = merged[3][0] * mask_list[3] + merged[3][1] * (1 - mask_list[3])
 
-        if self.arch_ver in ["4.7", "4.10"]:
+        if self.arch_ver in ["4.7", "4.10", "4.21"]:
             mask = torch.sigmoid(mask)
             merged[3] = warped_img0 * mask + warped_img1 * (1 - mask)
 
