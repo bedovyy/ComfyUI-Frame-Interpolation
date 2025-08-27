@@ -47,7 +47,7 @@ class RIFE_VFI:
                 "multiplier": ("INT", {"default": 2, "min": 1}),
                 "fast_mode": ("BOOLEAN", {"default": True}),
                 "ensemble": ("BOOLEAN", {"default": True}),
-                "scale_factor": ([0.25, 0.5, 1.0, 2.0, 4.0], {"default": 1.0})
+                "scale_factor": ([0.25, 0.5, 1.0, 2.0, 4.0, 8.0], {"default": 1.0})
             },
             "optional": {
                 "optional_interpolation_states": ("INTERPOLATION_STATES", )
